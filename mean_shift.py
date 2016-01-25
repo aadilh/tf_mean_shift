@@ -34,13 +34,28 @@ def radial_neighbors(points,radius):
 
     return neighbors
 
-def update_mean(old_mean, kernel, neighbors):
+def update_mean(old_mean, kernel, bandwidth, neighbors):
 
-    if kernel == "gaussian":
+    if kernel == 1:
         #TODO: Implemented the mean shifting using gaussian kernel
-        pass
+        weights = np.exp(-1*norm((neighbors - old_mean)/bandwidth,axis=1))
+        new_mean = np.sum(weights[:,None]*neighbors,axis=0)/np.sum(weights)
+
+        return new_mean
     else:
         return np.mean(neighbors, axis=0)
+
+def remove_multiples(centers, radius):
+    nbrs = NearestNeighbors(radius=radius).fit(centers)
+    unq = np.ones(len(centers), dtype=np.bool)
+
+    for i, center in enumerate(centers):
+        if unq[i]:
+            nids = nbrs.radius_neighbors([center],return_distance=False)[0]
+            unq[nids] = 0
+            unq[i] = 1
+
+    return centers[unq]
 
 
 def mean_shift(X, b, m_i, k, m_b_f):
@@ -80,7 +95,7 @@ def mean_shift(X, b, m_i, k, m_b_f):
                 neighbors = tf.placeholder(tf.float32, [None,n], name="neighbors")
                 nbrs_shape = tf.shape(neighbors)
 
-            new_mean = tf.py_func(update_mean,[old_mean,kernel,neighbors],[tf.float32], name="new_mean")[0]
+            new_mean = tf.py_func(update_mean,[old_mean, kernel, bandwidth, neighbors],[tf.float32], name="new_mean")[0]
 
             shift_distance = tf.sqrt(tf.reduce_sum(tf.pow(tf.sub(old_mean, new_mean), 2)), name="shift_distance")
 
@@ -97,7 +112,7 @@ def mean_shift(X, b, m_i, k, m_b_f):
         sys.stdout.flush()
 
         i=0
-        center_intensity_dict = {}
+        cluster_centers=np.zeros((n_seeds,n),dtype=np.float32)
         nbrs = NearestNeighbors(radius=bandwidth).fit(X)
 
         for seed in gen_seeds:
@@ -115,7 +130,7 @@ def mean_shift(X, b, m_i, k, m_b_f):
                 # print completed_iter,shape, n_mean, dist
 
                 if dist < 1e-3*b or completed_iter == m_i :
-                    center_intensity_dict[tuple(n_mean)] = shape[0]
+                    cluster_centers[i] = n_mean
                     break
                 else:
                     o_mean = n_mean
@@ -126,3 +141,12 @@ def mean_shift(X, b, m_i, k, m_b_f):
 
         sys.stdout.write("Completed Mean Shifting on all seeds \t\t\t\n")
         sys.stdout.flush()
+
+        cluster_centers = remove_multiples(cluster_centers, b)
+
+        nbrs = NearestNeighbors(n_neighbors=1).fit(cluster_centers)
+        labels = np.zeros(m, dtype=np.int)
+        dist, ids = nbrs.kneighbors(X)
+
+        labels = ids.flatten()
+        return cluster_centers, labels
