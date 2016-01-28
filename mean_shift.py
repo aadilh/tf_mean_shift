@@ -16,6 +16,7 @@ tf.app.flags.DEFINE_integer("min_bin_freq",1,"Minimum frequency for a binned poi
 FLAGS = tf.app.flags.FLAGS
 
 KERNELS = {"flat": 0, "gaussian": 1}
+im_name = "86000"
 
 def filter_binned_points(binned_points,min_bin_freq):
 
@@ -57,14 +58,31 @@ def remove_multiples(centers, radius):
 
     return centers[unq]
 
+def save_segmented_image(cluster_centers,labels,r,c,kernel,b):
+    fname = "results/"+im_name+"/"+kernel+"/log.txt"
+    f = open("results/"+im_name+"/"+kernel+"/log.txt",'a')
+    n = len(np.unique(labels))
+    labels = np.reshape(labels,[r,c])
+    segmented = np.zeros((r,c,3),np.uint8)
 
-def mean_shift(X, b, m_i, k, m_b_f):
+    for i in range(r):
+        for j in range(c):
+                segmented[i][j] = cluster_centers[labels[i][j]][0:3]
+
+    Image.fromarray(segmented).save("results/"+im_name+"/"+kernel+"/"+str(n)+".jpg")
+    f.write(str(b)+", "+str(n)+"\n")
+    print "\tNumber of clusters: ",n,"\t"
+    f.close()
+
+
+
+def mean_shift(X, b, m_i, k, m_b_f,r,c):
 
     (m,n) = X.shape
     print "Number of points: ",m
     print "Number of features: ",n
     print "Kernel: ",k
-    print "Bandwidth: ",b
+    # print "Bandwidth: ",b
     print "Minimum Bin Frequency: ",m_b_f
 
     graph = tf.Graph()
@@ -73,7 +91,7 @@ def mean_shift(X, b, m_i, k, m_b_f):
 
         with tf.name_scope("input") as scope:
             data_points = tf.constant(X,dtype=tf.float32, name="data_points")
-            bandwidth = tf.constant(b,dtype=tf.float32, name="bandwidth")
+            bandwidth = tf.placeholder(dtype=tf.float32, name="bandwidth")
             max_iter = tf.constant(m_i, name="maximum_iterations")
             kernel = tf.constant(KERNELS[k], name=k+"_kernel")
             n_samples = tf.constant(m, name="no_of_samples")
@@ -102,51 +120,93 @@ def mean_shift(X, b, m_i, k, m_b_f):
         sess = tf.Session()
         writer = tf.train.SummaryWriter(FLAGS.logdir, sess.graph_def)
 
-        sys.stdout.write("Generating seeds\r")
-        sys.stdout.flush()
-
-        gen_seeds = sess.run(seeds)
-        n_seeds = len(gen_seeds)
-
-        sys.stdout.write("Generated "+str(n_seeds)+" seeds\n")
-        sys.stdout.flush()
-
-        i=0
-        cluster_centers=np.zeros((n_seeds,n),dtype=np.float32)
-        nbrs = NearestNeighbors(radius=bandwidth).fit(X)
-
-        for seed in gen_seeds:
-            sys.stdout.write("Completed Mean Shifting on "+str(i)+" seeds\r")
+        while b<40:
+            print "\tBandwidth: ",b
+            sys.stdout.write("\t\tGenerating seeds\r")
             sys.stdout.flush()
 
-            o_mean = seed
-            completed_iter = 0
+            gen_seeds = sess.run(seeds,feed_dict={bandwidth: b})
+            n_seeds = len(gen_seeds)
 
-            while True:
-                cnbrs = X[nbrs.radius_neighbors([o_mean], b, return_distance=False)[0]]
-                feed = {old_mean: o_mean, neighbors: cnbrs}
-                shape, n_mean, dist = sess.run([nbrs_shape, new_mean, shift_distance],feed_dict=feed)
+            sys.stdout.write("\t\tGenerated "+str(n_seeds)+" seeds\n")
+            sys.stdout.flush()
 
-                # print completed_iter,shape, n_mean, dist
-
-                if dist < 1e-3*b or completed_iter == m_i :
-                    cluster_centers[i] = n_mean
-                    break
-                else:
-                    o_mean = n_mean
-                    completed_iter+=1
+            i=0
+            cluster_centers=np.zeros((n_seeds,n),dtype=np.float32)
+            nbrs = NearestNeighbors(radius=bandwidth).fit(X)
 
 
-            i+=1
+            for seed in gen_seeds:
+                sys.stdout.write("\t\tCompleted Mean Shifting on "+str(i)+" seeds\r")
+                sys.stdout.flush()
 
-        sys.stdout.write("Completed Mean Shifting on all seeds \t\t\t\n")
-        sys.stdout.flush()
+                o_mean = seed
+                completed_iter = 0
 
-        cluster_centers = remove_multiples(cluster_centers, b)
+                while True:
+                    i_nbrs = nbrs.radius_neighbors([o_mean], b, return_distance=False)
+                    # print len(i_nbrs[0])
+                    if len(i_nbrs[0]>0):
+                        cnbrs = X[i_nbrs[0]]
+                        feed = {old_mean: o_mean, neighbors: cnbrs, bandwidth: b}
+                        shape, n_mean, dist = sess.run([nbrs_shape, new_mean, shift_distance],feed_dict=feed)
+                    else :
+                        cluster_centers[i] = o_mean
+                        break
+                    # print completed_iter,shape, n_mean, dist
 
-        nbrs = NearestNeighbors(n_neighbors=1).fit(cluster_centers)
-        labels = np.zeros(m, dtype=np.int)
-        dist, ids = nbrs.kneighbors(X)
+                    if dist < 1e-3*b or completed_iter == m_i :
+                        cluster_centers[i] = n_mean
+                        break
+                    else:
+                        o_mean = n_mean
+                        completed_iter+=1
 
-        labels = ids.flatten()
-        return cluster_centers, labels
+
+                i+=1
+
+            sys.stdout.write("\t\tCompleted Mean Shifting on all seeds \t\t\t\n")
+            sys.stdout.flush()
+
+            cluster_centers = remove_multiples(cluster_centers, b)
+
+            nbrs = NearestNeighbors(n_neighbors=1).fit(cluster_centers)
+            labels = np.zeros(m, dtype=np.int)
+            dist, ids = nbrs.kneighbors(X)
+
+            labels = ids.flatten()
+            save_segmented_image(cluster_centers, labels,r,c,k,b)
+            # return cluster_centers, labels
+
+            b+=5
+
+
+def main(args):
+
+    im = Image.open("images/"+im_name+".jpg")
+    X_im = np.array(im)
+    r,c,_ = X_im.shape
+
+    X = np.zeros((r,c,5),dtype=np.uint8)
+
+    for i in range(r):
+        for j in range(c):
+            for k in range(5):
+                if k<3 :
+                    X[i][j][k] = X_im[i][j][k]
+                elif k==3:
+                    X[i][j][k] = i
+                else :
+                    X[i][j][k] = j
+
+    X = X.reshape(r*c,5)
+    print
+    mean_shift(X, 5, 300,"gaussian",1,r,c)
+    mean_shift(X, 5, 300,"flat",1,r,c)
+    # print labels.shape
+    # print labels
+    # print cluster_centers
+
+
+if __name__ == "__main__":
+    tf.app.run()
