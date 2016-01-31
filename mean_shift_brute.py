@@ -29,9 +29,23 @@ def filter_binned_points(binned_points,min_bin_freq):
 
     return fbps
 
-def radial_neighbors(points,radius):
+def radial_neighbors(points,radius,mean):
     #TODO: Implement efficient nearest radial neighbors algorithm
-    neighbors = np.array([point for point in points if norm(point)<=radius], dtype=np.float32)
+    # neighbors = np.array([point for point in points if norm(point)<=radius], dtype=np.float32)
+
+    box_points = np.array([point for point in  points if ((point-mean)[3]<radius) and ((point-mean)[3]>-1*radius) and ((point-mean)[4]<radius) and ((point-mean)[4]>-1*radius)])
+    # box_points = []
+
+    # for point in points:
+    #     try:
+    #         sp = point-mean
+    #         if (sp[3]<radius) and (sp[3]>-1*radius) and (sp[4]<radius) and (sp[4]>-1*radius) :
+    #             box_points.append(point)
+    #     except Exception as e:
+    #         print e
+
+
+    neighbors = np.array([point for point in box_points if norm(point-mean)<=radius], dtype=np.float32)
 
     return neighbors
 
@@ -39,8 +53,14 @@ def update_mean(old_mean, kernel, bandwidth, neighbors):
 
     if kernel == 1:
         #TODO: Implemented the mean shifting using gaussian kernel
-        weights = np.exp(-1*norm((neighbors - old_mean)/bandwidth,axis=1))
-        new_mean = np.sum(weights[:,None]*neighbors,axis=0)/np.sum(weights)
+
+        try:
+            weights = np.exp(-1*norm((neighbors - old_mean)/bandwidth,axis=1))
+            new_mean = np.sum(weights[:,None]*neighbors,axis=0)/np.sum(weights)
+        except Exception as e:
+            new_mean = np.zeros(5, dtype=np.float32)
+            print e
+
 
         return new_mean
     else:
@@ -59,8 +79,8 @@ def remove_multiples(centers, radius):
     return centers[unq]
 
 def save_segmented_image(cluster_centers,labels,r,c,kernel,b):
-    fname = "results/"+im_name+"/"+kernel+"/log.txt"
-    f = open("results/"+im_name+"/"+kernel+"/log.txt",'a')
+    fname = "results/"+im_name+"/"+kernel+"/log2.txt"
+    f = open("results/"+im_name+"/"+kernel+"/log2.txt",'a')
     n = len(np.unique(labels))
     labels = np.reshape(labels,[r,c])
     segmented = np.zeros((r,c,3),np.uint8)
@@ -69,7 +89,7 @@ def save_segmented_image(cluster_centers,labels,r,c,kernel,b):
         for j in range(c):
                 segmented[i][j] = cluster_centers[labels[i][j]][0:3]
 
-    Image.fromarray(segmented).save("results/"+im_name+"/"+kernel+"/"+str(n)+".jpg")
+    Image.fromarray(segmented).save("results/"+im_name+"/"+kernel+"/"+str(n)+"_brute.jpg")
     f.write(str(b)+", "+str(n)+"\n")
     print "\tNumber of clusters: ",n,"\t"
     f.close()
@@ -96,6 +116,8 @@ def mean_shift(X, b, m_i, k, m_b_f,r,c):
             kernel = tf.constant(KERNELS[k], name=k+"_kernel")
             n_samples = tf.constant(m, name="no_of_samples")
             n_features = tf.constant(n, name="no_of_features")
+            im_rows = tf.constant(r,name="no_of_rows")
+            im_cols = tf.constant(c,name="no_of_columns")
             min_bin_freq = tf.constant(m_b_f, name="min_bin_freq")
 
         with tf.name_scope("generate_seeds") as scope:
@@ -108,9 +130,9 @@ def mean_shift(X, b, m_i, k, m_b_f,r,c):
 
             with tf.name_scope("radial_neighbors") as scope:
                 # shifted_points = tf.sub(data_points, old_mean, name="shifted_points")
-                # neighbors = tf.py_func(radial_neighbors,[shifted_points,bandwidth],[tf.float32],name="neighbors")[0]
-                #
-                neighbors = tf.placeholder(tf.float32, [None,n], name="neighbors")
+                neighbors = tf.py_func(radial_neighbors,[data_points,bandwidth,old_mean],[tf.float32],name="neighbors")[0]
+
+                # neighbors = tf.placeholder(tf.float32, [None,n], name="neighbors")
                 nbrs_shape = tf.shape(neighbors)
 
             new_mean = tf.py_func(update_mean,[old_mean, kernel, bandwidth, neighbors],[tf.float32], name="new_mean")[0]
@@ -133,7 +155,7 @@ def mean_shift(X, b, m_i, k, m_b_f,r,c):
 
             i=0
             cluster_centers=np.zeros((n_seeds,n),dtype=np.float32)
-            nbrs = NearestNeighbors(radius=bandwidth).fit(X)
+            # nbrs = NearestNeighbors(radius=bandwidth).fit(X)
 
 
             for seed in gen_seeds:
@@ -144,16 +166,16 @@ def mean_shift(X, b, m_i, k, m_b_f,r,c):
                 completed_iter = 0
 
                 while True:
-                    i_nbrs = nbrs.radius_neighbors([o_mean], b, return_distance=False)
+                    # i_nbrs = nbrs.radius_neighbors([o_mean], b, return_distance=False)
                     # print len(i_nbrs[0])
-                    if len(i_nbrs[0]>0):
-                        cnbrs = X[i_nbrs[0]]
-                        feed = {old_mean: o_mean, neighbors: cnbrs, bandwidth: b}
-                        shape, n_mean, dist = sess.run([nbrs_shape, new_mean, shift_distance],feed_dict=feed)
-                    else :
-                        cluster_centers[i] = o_mean
-                        break
-                    # print completed_iter,shape, n_mean, dist
+                    # if len(i_nbrs[0]>0):
+                        # cnbrs = X[i_nbrs[0]]
+                    feed = {old_mean: o_mean, bandwidth: b}
+                    shape, n_mean, dist = sess.run([nbrs_shape, new_mean, shift_distance],feed_dict=feed)
+                    # else :
+                    #     cluster_centers[i] = o_mean
+                    #     break
+                    print completed_iter,shape, n_mean, dist
 
                     if dist < 1e-3*b or completed_iter == m_i :
                         cluster_centers[i] = n_mean
@@ -202,7 +224,7 @@ def main(args):
     X = X.reshape(r*c,5)
     print
     mean_shift(X, 40, 300,"gaussian",1,r,c)
-    #mean_shift(X, 5, 300,"flat",1,r,c)
+    # mean_shift(X, 5, 300,"flat",1,r,c)
     # print labels.shape
     # print labels
     # print cluster_centers
